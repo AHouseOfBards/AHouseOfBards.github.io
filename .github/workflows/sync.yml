@@ -1,0 +1,56 @@
+name: Sync Bonfire's stable manifest
+
+# Servers that installed Bonfire before the repository was renamed poll
+# https://ahouseofbards.github.io/Bonfire-JellyProfiles/manifest.json. GitHub does not
+# redirect a project site after a rename, so this site serves a copy at that path.
+# The copy follows manifest.json on Bonfire's main branch. The repository is read by its
+# numeric id, which survives renames.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [bonfire-stable]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Copy the manifest if it changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BONFIRE_REPO_ID: '1266529660'
+        run: |
+          set -euo pipefail
+          gh api "repositories/$BONFIRE_REPO_ID/contents/manifest.json?ref=main" \
+            -H "Accept: application/vnd.github.raw" > new.json
+          # Refuse anything that is not Bonfire's manifest with at least one version, so a
+          # bad fetch can never blank the feed old servers read.
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("new.json", "utf8"));
+            const ok = Array.isArray(m) && m.length >= 1
+              && m[0].guid === "b1462fca-774b-4b13-8d02-e2d4f2bc18b9"
+              && Array.isArray(m[0].versions) && m[0].versions.length >= 1
+              && m[0].versions.every(v => /^[0-9a-f]{32}$/.test(v.checksum) && /^https:\/\//.test(v.sourceUrl));
+            if (!ok) { console.error("not a usable Bonfire manifest"); process.exit(1); }
+          '
+          if cmp -s new.json Bonfire-JellyProfiles/manifest.json; then
+            echo "unchanged"; rm new.json; exit 0
+          fi
+          mv new.json Bonfire-JellyProfiles/manifest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Bonfire-JellyProfiles/manifest.json
+          git commit -m "Sync Bonfire's stable manifest"
+          git push
